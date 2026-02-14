@@ -10,9 +10,11 @@ static const uint32_t SCREEN_WIDTH  = 800;
 static const uint32_t SCREEN_HEIGHT = 800;
 static const uint32_t PIXELS_NUMBER = SCREEN_WIDTH*SCREEN_HEIGHT;
 
-//static const uint32_t RED   = 0x00FF0000;
-//static const uint32_t GREEN = 0x0000FF00;
+static const uint32_t RED   = 0x00FF0000;
+static const uint32_t GREEN = 0x0000FF00;
 static const uint32_t BLUE  = 0x000000FF;
+
+typedef uint32_t Color;
 
 typedef struct {
 	SDL_Window*  window;
@@ -35,6 +37,7 @@ typedef struct {
         V3f position;
 	V3f forward;
         V3f up;
+	float yaw;
         float fovy;
 	float znear;
 	float zfar;
@@ -51,12 +54,39 @@ static inline Camera camera_default(void) {
 		.position = (V3f) {{ 4.0f, 1.0f, -12.0f }},
 		.forward  = (V3f) {{ 0.0f, 0.0f,   1.0f }},
 		.up 	  = (V3f) {{ 0.0f, 1.0f,   0.0f }},
-		.fovy     = 120.0f,
-		.znear    = 1.0f,
+		.fovy     = 80.0f,
+		.znear    = 0.5f,
 		.zfar     = 100.0f
 	};
 
 	return c;
+}
+
+static inline float maxf(float value, float max) {
+
+	return value < max ? max : value;
+}
+
+void camera_update(Camera* camera, V2f rel) {
+
+	float scale = 1e-3;
+
+	float angle_x = -scale*rel.x;
+	camera->forward = norm_3f(rot_rod_3f(camera->forward, (V3f) {{ 0.0f, 1.0f, 0.0f}} , angle_x));
+
+	float angle_y     = -scale*rel.y;
+	V3f right         = norm_3f(cross_3f(camera->forward, (V3f) {{0.0f, 1.0f, 0.0f}}));
+	camera->forward   = norm_3f(rot_rod_3f(camera->forward, right, angle_y));
+	camera->forward.y = maxf(camera->forward.y, -0.9);
+	camera->up        = norm_3f(cross_3f(right, camera->forward));
+}
+
+void camera_info(Camera camera) {
+	V3f right = norm_3f(cross_3f(camera.forward, camera.up));
+	printf("position = (%.2f, %.2f, %.2f)\n", camera.position.x, camera.position.y, camera.position.z);
+	printf("forward  = (%.2f, %.2f, %.2f)\n", camera.forward.x, camera.forward.y, camera.forward.z);
+	printf("up       = (%.2f, %.2f, %.2f)\n", camera.up.x, camera.up.y, camera.up.z);
+	printf("right    = (%.2f, %.2f, %.2f)\n", right.x, right.y, right.z);
 }
 
 void memory_free(SDLContext* ctx) {
@@ -79,13 +109,14 @@ void context_sdl_init(SDLContext* ctx) {
 	ctx->bytes_per_pixel = ctx->surface->format->BytesPerPixel;
 
 
+	SDL_SetRelativeMouseMode(SDL_TRUE);
 	__lsan_enable();
 }
 
 static inline V3f world_to_view(V3f v_in, Camera c) {
 
 	V3f res   = {0};
-	V3f right = norm_3f(cross_3f(c.up, c.forward));
+	V3f right = norm_3f(cross_3f(c.forward, c.up));
 
 	V3f rel = {
 		.x = v_in.x - c.position.x,
@@ -272,6 +303,44 @@ void buffer_flush(uint32_t* buffer, uint8_t bytes_per_pixel) {
 	memset(buffer, 0, PIXELS_NUMBER * bytes_per_pixel);
 }
 
+void triangle_draw(Triangle triangle, uint32_t* buffer, Camera camera, Color color) {
+
+	line_draw(triangle.v1, triangle.v2, buffer, color, camera);
+	line_draw(triangle.v1, triangle.v3, buffer, color, camera);
+	line_draw(triangle.v2, triangle.v3, buffer, color, camera);
+}
+
+typedef struct {
+	V3f origin;
+	float width;
+	float height;
+	Color color;
+} Rectangle;
+
+void cube_draw(V3f origin, float length, uint32_t* buffer, Color color, Camera camera) {
+
+	// base
+	V3f p2 = {{ origin.x+length, origin.y, origin.z}};
+	V3f p3 = {{ origin.x, origin.y, origin.z+length}};
+	V3f p4 = {{ origin.x+length, origin.y, origin.z+length}};
+
+	V3f p5 = {{ origin.x, origin.y+length, origin.z }};
+	V3f p6 = {{ origin.x+length, origin.y+length, origin.z}};
+	V3f p7 = {{ origin.x, origin.y+length, origin.z+length}};
+	V3f p8 = {{ origin.x+length, origin.y+length, origin.z+length}};
+
+	Triangle tri1 = { .v1 = origin, .v2 = p2, .v3 = p4 };
+	Triangle tri2 = { .v1 = origin, .v2 = p3, .v3 = p4 };
+	Triangle tri3 = { .v1 = p5, .v2 = p6, .v3 = p8 };
+	Triangle tri4 = { .v1 = p5, .v2 = p7, .v3 = p8 };
+
+	triangle_draw(tri1, buffer, camera, RED);
+	triangle_draw(tri2, buffer, camera, RED);
+	triangle_draw(tri3, buffer, camera, RED);
+	triangle_draw(tri4, buffer, camera, RED);
+}
+
+
 void event_loop(SDLContext* ctx, uint32_t* buffer, Camera camera) {
 
 	// for fps calculation
@@ -280,10 +349,17 @@ void event_loop(SDLContext* ctx, uint32_t* buffer, Camera camera) {
 	size_t step = 0;
 
 	bool running = true;
+
+	Triangle tri1 = {
+		.v1 = {{ -1.0f, 0.0f, -1.0f }},
+		.v2 = {{  1.0f, 0.0f,  1.0f }},
+		.v3 = {{  1.0f, 0.0f,  2.0f }}
+	};
+
 	while (running) {
 
 		// start time measuring
-		if (step % 100 == 0) {
+		if (step % 1000 == 0) {
 			t0 = (struct timespec){0};
 			t1 = (struct timespec){0};
 			timespec_get(&t0, TIME_UTC);
@@ -294,24 +370,45 @@ void event_loop(SDLContext* ctx, uint32_t* buffer, Camera camera) {
 			switch (ctx->event.type) {
 
 			case SDL_KEYDOWN:
+				float mv_fac = 0.05f;
 				if (ctx->event.key.keysym.sym == SDLK_ESCAPE) running = false;
 				if (ctx->event.key.keysym.sym == SDLK_g) state.grid_on = !state.grid_on;
+				if (ctx->event.key.keysym.sym == SDLK_u) {
+					V3f dir = (V3f) {{camera.forward.x, 0.0f, camera.forward.z}};
+					dir = norm_3f(dir);
+					camera.position = add_3f(camera.position, scal_3f(mv_fac, dir));
+				}
+				if (ctx->event.key.keysym.sym == SDLK_i) {
+					V3f dir = (V3f) {{camera.forward.x, 0.0f, camera.forward.z}};
+					dir = norm_3f(dir);
+					camera.position = sub_3f(camera.position, scal_3f(mv_fac, dir));
+				}
+				if (ctx->event.key.keysym.sym == SDLK_t) {
+					V3f dir = norm_3f(cross_3f(camera.up, camera.forward));
+					camera.position = add_3f(camera.position, scal_3f(mv_fac, dir));
+				}
+				if (ctx->event.key.keysym.sym == SDLK_e) {
+					V3f dir = norm_3f(cross_3f(camera.forward, camera.up));
+					camera.position = add_3f(camera.position, scal_3f(mv_fac, dir));
+				}
 
 				break;
 
 			case SDL_MOUSEMOTION:
-				V3f rel = {
+				V2f rel = {
 					.x = ctx->event.motion.xrel,
 					.y = ctx->event.motion.yrel,
-					.z = 0
 				};
-				camera.position = sub_3f(camera.position,rel);
+				camera_update(&camera, rel);
 
 			default:
 				break;
 			}
 		}
 		if (state.grid_on) grid_draw(buffer, camera);
+		triangle_draw(tri1, buffer, camera, GREEN);
+		V3f origin = {{8.0f, 0.0f, 8.0f}};
+		cube_draw(origin, 2.0f, buffer, RED, camera);
 
 		SDL_UpdateWindowSurface(ctx->window);
 		buffer_flush(buffer, ctx->bytes_per_pixel);
@@ -321,9 +418,10 @@ void event_loop(SDLContext* ctx, uint32_t* buffer, Camera camera) {
     		long dns = t1.tv_nsec - t0.tv_nsec;
 		double frame_time_ms = dns / (1000.0*1000.0);
 		double frame_time_s  = frame_time_ms / 1000.0;
-		if (step % 100 == 0) {
+		if (step % 1000 == 0) {
     			printf("frame time = %.2f ms\n", frame_time_ms);
     			printf("       FPS = %.2f\n", 1/frame_time_s);
+			camera_info(camera);
 			step = 0;
 		}
 		step += 1;

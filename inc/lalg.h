@@ -16,6 +16,14 @@ typedef union {
 	struct {
 		float x;
 		float y;
+	};
+	float arr[2];
+} V2f;
+
+typedef union {
+	struct {
+		float x;
+		float y;
 		float z;
 	};
 	float arr[3];
@@ -61,15 +69,37 @@ static inline V2u v2s_to_v2u(V2s a) {
 	return res;
 }
 
+static inline M3f id_3f() {
+
+	M3f res = {0};
+
+	res = (M3f) {{
+		1.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f,
+		0.0f, 0.0f, 1.0f
+	}};
+
+	return res;
+}
+
+static inline float dot_3f(V3f a, V3f b) {
+
+	float res = 0;
+
+	res = a.x*b.x+a.y*b.y+a.z*b.z;
+
+	return res;
+}
+
 static inline M3f rot_xy_3f(float angle) {
 
 	M3f res = {0};
 
-	res = (M3f) {
+	res = (M3f) {{
 		cosf(angle), -sinf(angle), 0.0f,
 		sinf(angle),  cosf(angle), 0.0f,
 		0.0f,                0.0f, 1.0f
-	};
+	}};
 
 	return res;
 }
@@ -79,11 +109,11 @@ static inline M3f rot_xz_3f(float angle) {
 	M3f res = {0};
 
 
-	res = (M3f) {
+	res = (M3f) {{
 		 cosf(angle), 0.0f, sinf(angle),
 		        0.0f, 1.0f,        0.0f,
 		-sinf(angle), 0.0f, cosf(angle),
-	};
+	}};
 
 	return res;
 }
@@ -93,11 +123,11 @@ static inline M3f rot_yz_3f(float angle) {
 	M3f res = {0};
 
 
-	res = (M3f) {
+	res = (M3f) {{
 		1.0f,        0.0f, 	   0.0f,
 		0.0f, cosf(angle), -sinf(angle),
 		0.0f, sinf(angle),  cosf(angle),
-	};
+	}};
 
 	return res;
 }
@@ -170,7 +200,7 @@ static inline V3f add_3f(V3f a, V3f b) {
 	return res;
 }
 
-static inline V3f scal_3f(V3f a, float fac) {
+static inline V3f scal_3f(float fac, V3f a) {
 
 	V3f res = {0};
 
@@ -223,6 +253,18 @@ static inline V2s intersect_y(V2s a, V2s b, int32_t y) {
 
 	res.x = a.x + (int32_t)(lambda * ((float)b.x - (float)a.x));
 	res.y = y;
+
+	return res;
+}
+
+static inline V3f rot_rod_3f(V3f vector, V3f axis, float angle) {
+
+	V3f res = {0};
+
+	float cosine = cosf(angle);
+	float sine   = sinf(angle);
+
+	res = add_3f(add_3f(scal_3f(cosine, vector), scal_3f(sine, cross_3f(axis, vector))), scal_3f((1.0f-cosine)*dot_3f(axis, vector), axis));
 
 	return res;
 }
