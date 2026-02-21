@@ -1,7 +1,7 @@
 #!/bin/bash
 
 gcc -o xsrend \
-	src/main.c \
+	src/main.c src/camera.c src/text.c\
 	lib/libSDL2.a \
 	-g -fsanitize=address \
 	-lm \

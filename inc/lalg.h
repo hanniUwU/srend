@@ -1,6 +1,8 @@
 #ifndef _LALG_H
 #define _LALG_H
 #include <stdint.h>
+#include <math.h>
+#include <stddef.h>
 
 typedef struct {
 	uint32_t x;
@@ -49,6 +51,12 @@ typedef struct {
 	V2u v2;
 	V2u v3;
 } Triangle_2u;
+
+typedef struct {
+	V2u v1;
+	V2u v2;
+	V2u v3;
+} Triangle_2s;
 
 typedef union {
 	struct {
@@ -267,6 +275,11 @@ static inline V3f rot_rod_3f(V3f vector, V3f axis, float angle) {
 	res = add_3f(add_3f(scal_3f(cosine, vector), scal_3f(sine, cross_3f(axis, vector))), scal_3f((1.0f-cosine)*dot_3f(axis, vector), axis));
 
 	return res;
+}
+
+static inline float maxf(float value, float max) {
+
+	return value < max ? max : value;
 }
 #endif
 

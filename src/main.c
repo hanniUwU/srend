@@ -5,16 +5,18 @@
 
 #include "../inc/SDL2/include/SDL.h"
 #include "../inc/lalg.h"
+#include "../inc/camera.h"
+#include "../inc/text.h"
+#include "../inc/color.h"
+#include "../assets/asset_cube.h"
+#include "../assets/asset_teapot.h"
 
-static const uint32_t SCREEN_WIDTH  = 800;
-static const uint32_t SCREEN_HEIGHT = 800;
+static         size_t lines_count_global    = 0;
+static         size_t triangle_count_global = 0;
+
+static const uint32_t SCREEN_WIDTH  = 1920;
+static const uint32_t SCREEN_HEIGHT = 1080;
 static const uint32_t PIXELS_NUMBER = SCREEN_WIDTH*SCREEN_HEIGHT;
-
-static const uint32_t RED   = 0x00FF0000;
-static const uint32_t GREEN = 0x0000FF00;
-static const uint32_t BLUE  = 0x000000FF;
-
-typedef uint32_t Color;
 
 typedef struct {
 	SDL_Window*  window;
@@ -26,67 +28,23 @@ typedef struct {
 typedef struct {
 	uint32_t flags;
 	bool grid_on;
+	bool wireframe;
 } State;
 
 State state = {
 	.flags = 0,
-	.grid_on = true
+	.grid_on = true,
+	.wireframe = true
 };
 
-typedef struct {
-        V3f position;
-	V3f forward;
-        V3f up;
-	float yaw;
-        float fovy;
-	float znear;
-	float zfar;
-} Camera;
+void pixel_set(uint32_t x, uint32_t y, uint32_t* buffer, uint32_t color)
+{
 
-void pixel_set(uint32_t x, uint32_t y, uint32_t* buffer, uint32_t color) {
+if (x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT) return;
 
-	buffer[x + y*SCREEN_WIDTH] = color;
-}
 
-static inline Camera camera_default(void) {
-
-	Camera c = {
-		.position = (V3f) {{ 4.0f, 1.0f, -12.0f }},
-		.forward  = (V3f) {{ 0.0f, 0.0f,   1.0f }},
-		.up 	  = (V3f) {{ 0.0f, 1.0f,   0.0f }},
-		.fovy     = 80.0f,
-		.znear    = 0.5f,
-		.zfar     = 100.0f
-	};
-
-	return c;
-}
-
-static inline float maxf(float value, float max) {
-
-	return value < max ? max : value;
-}
-
-void camera_update(Camera* camera, V2f rel) {
-
-	float scale = 1e-3;
-
-	float angle_x = -scale*rel.x;
-	camera->forward = norm_3f(rot_rod_3f(camera->forward, (V3f) {{ 0.0f, 1.0f, 0.0f}} , angle_x));
-
-	float angle_y     = -scale*rel.y;
-	V3f right         = norm_3f(cross_3f(camera->forward, (V3f) {{0.0f, 1.0f, 0.0f}}));
-	camera->forward   = norm_3f(rot_rod_3f(camera->forward, right, angle_y));
-	camera->forward.y = maxf(camera->forward.y, -0.9);
-	camera->up        = norm_3f(cross_3f(right, camera->forward));
-}
-
-void camera_info(Camera camera) {
-	V3f right = norm_3f(cross_3f(camera.forward, camera.up));
-	printf("position = (%.2f, %.2f, %.2f)\n", camera.position.x, camera.position.y, camera.position.z);
-	printf("forward  = (%.2f, %.2f, %.2f)\n", camera.forward.x, camera.forward.y, camera.forward.z);
-	printf("up       = (%.2f, %.2f, %.2f)\n", camera.up.x, camera.up.y, camera.up.z);
-	printf("right    = (%.2f, %.2f, %.2f)\n", right.x, right.y, right.z);
+	//printf("here! ps\n");
+    buffer[y * SCREEN_WIDTH + x] = color;
 }
 
 void memory_free(SDLContext* ctx) {
@@ -135,107 +93,77 @@ V2s get_image_crd(V3f v, Camera camera) {
 
 	const float a = (float) SCREEN_HEIGHT / (float) SCREEN_WIDTH;
 	const float f = 1 / tanf(0.5f * camera.fovy * M_PI / 180.0f);
-	//const float zfar = camera.zfar;
-	//const float znear = camera.znear;
-	//const float l = zfar / (zfar - znear) - zfar*znear / (zfar-znear);
 
 	float px = a * f * v.x;
 	float py = f * v.y;
-	//float pz = l*v.z - l*znear;
+	float pz = fmaxf(v.z, camera.znear);
 
 	// perspective divide
-	if (v.z*v.z > 0.0) {
-		px /= v.z;
-		py /= v.z;
-	}
+	px /= pz;
+	py /= pz;
 
-	int32_t x_screen = (int32_t)((px + 1.0f) * 0.5f * SCREEN_WIDTH);
-	int32_t y_screen = (int32_t)((1.0f - py) * 0.5f * SCREEN_HEIGHT);
+	int32_t x_screen = (int32_t)((px + 1.0f) * 0.5f * (int32_t)SCREEN_WIDTH);
+	int32_t y_screen = (int32_t)((1.0f - py) * 0.5f * (int32_t)SCREEN_HEIGHT);
+	// Clamp to avoid overflow of small V2s types
+	if (x_screen < INT32_MIN) x_screen = INT32_MIN;
+	if (x_screen > INT32_MAX) x_screen = INT32_MAX;
+	if (y_screen < INT32_MIN) y_screen = INT32_MIN;
+	if (y_screen > INT32_MAX) y_screen = INT32_MAX;
 
 	return (V2s){ x_screen, y_screen };
 }
 
-// cohen sutherland, see wikipedia
-bool clipline(int* x1,int* y1,int* x2,int* y2) {
+#define XMIN 40
+#define YMIN 40
+#define XMAX (SCREEN_WIDTH - 40)
+#define YMAX (SCREEN_HEIGHT - 40)
 
-	static const int CLIPLEFT  = 1;
-	static const int CLIPRIGHT = 2;
-	static const int CLIPLOWER = 4;
-	static const int CLIPUPPER = 8;
-	static const int XMin = 10;
-	static const int YMin = 10;
-	static const int XMax = SCREEN_WIDTH  - 10;
-	static const int YMax = SCREEN_HEIGHT - 10;
+static const float EPS = 1e-12;
 
-	int K1 = 0;
-	int K2 = 0;
-	int dx = *x2 - *x1;
-	int dy = *y2 - *y1;
+// Liang–Barsky clipping.
+bool clipline(int32_t *x1, int32_t *y1, int32_t *x2, int32_t *y2) {
 
-	if(*y1 < YMin) K1  = CLIPLOWER;
-	if(*y1 > YMax) K1  = CLIPUPPER;
-	if(*x1 < XMin) K1 |= CLIPLEFT;
-	if(*x1 > XMax) K1 |= CLIPRIGHT;
+	const float dx = (float) (*x2 - *x1);
+	const float dy = (float) (*y2 - *y1);
 
-	if(*y2 < YMin) K2  = CLIPLOWER;
-	if(*y2 > YMax) K2  = CLIPUPPER;
-	if(*x2 < XMin) K2 |= CLIPLEFT;
-	if(*x2 > XMax) K2 |= CLIPRIGHT;
+	float p[4] = { -dx, dx, -dy, dy };
+	float q[4] = { *x1 - (float) XMIN, (float) XMAX - *x1,
+		       *y1 - (float) YMIN, (float) YMAX - *y1 };
 
-	while(K1 || K2) {
-    		if(K1 & K2) return false;
-		if(K1) {
-			if(K1 & CLIPLEFT) {
-				*y1 += (XMin - *x1) * dy / dx;
-				*x1  = XMin;
-			}
-			else if(K1 & CLIPRIGHT) {
-				*y1 += (XMax - *x1) * dy / dx;
-				*x1  = XMax;
-			}
+	float u1 = 0.0f;
+	float u2 = 1.0f;
 
-			if(K1 & CLIPLOWER) {
-				*x1 += (YMin - *y1) * dx / dy;
-				*y1  = YMin;
-			}
-			else if(K1 & CLIPUPPER) {
-				*x1 += (YMax - *y1) * dx / dy;
-				*y1  = YMax;
-			}
-			K1 = 0;
-			if(*y1 < YMin) K1  = CLIPLOWER;
-			if(*y1 > YMax) K1  = CLIPUPPER;
-			if(*x1 < XMin) K1 |= CLIPLEFT;
-			if(*x1 > XMax) K1 |= CLIPRIGHT;
-    		}
+	for (int i = 0; i < 4; ++i) {
+		float pi = p[i];
+		float qi = q[i];
 
-    		if(K1 & K2) return false;
-
-		if(K2) {
-			if(K2 & CLIPLEFT) {
-				*y2 += (XMin - *x2) * dy / dx;
-				*x2  = XMin;
-			} else if(K2 & CLIPRIGHT) {
-				*y2 += (XMax - *x2) * dy / dx;
-				*x2  = XMax;
-			}
-			if(K2 & CLIPLOWER) {
-				*x2 += (YMin - *y2) * dx / dy;
-				*y2  = YMin;
-			}
-			else if(K2 & CLIPUPPER) {
-				*x2 += (YMax - *y2) * dx / dy;
-				*y2 = YMax;
-			}
-			K2 = 0;
-
-			if(*y2 < YMin) K2  = CLIPLOWER;
-			if(*y2 > YMax) K2  = CLIPUPPER;
-			if(*x2 < XMin) K2 |= CLIPLEFT;
-			if(*x2 > XMax) K2 |= CLIPRIGHT;
-		}
+		/* Handle near-parallel (pi == 0) robustly */
+		if (fabs(pi) < EPS) {
+			if (qi < 0.0f) return false;
+		} else {
+			float r = qi / pi;
+	                if (pi < 0.0f) {
+                		if (r > u1) u1 = r;
+			} else {
+		                if (r < u2) u2 = r;
+           		}
+			if (u1 > u2) return false;
+            	}
 	}
-  	return true;
+
+	/* compute clipped coordinates using original x1,y1,d */
+	float nx1 = *x1 + u1 * dx;
+	float ny1 = *y1 + u1 * dy;
+	float nx2 = *x1 + u2 * dx;
+	float ny2 = *y1 + u2 * dy;
+
+	/* round to nearest integer (llround available in math.h) */
+	*x1 = (int32_t) llroundf(nx1);
+	*y1 = (int32_t) llroundf(ny1);
+	*x2 = (int32_t) llroundf(nx2);
+	*y2 = (int32_t) llroundf(ny2);
+
+	return true;
 }
 
 void line_draw(V3f p1, V3f p2, uint32_t* buffer, uint32_t color, Camera camera) {
@@ -260,25 +188,33 @@ void line_draw(V3f p1, V3f p2, uint32_t* buffer, uint32_t color, Camera camera) 
 	V2s start = get_image_crd(p1, camera);
 	V2s end   = get_image_crd(p2, camera);
 
+	if ( start.x < (int32_t) XMIN && end.x < (int32_t) XMIN) return;
+	if ( start.y < (int32_t) YMIN && end.y < (int32_t) YMIN) return;
+	if ( start.x > (int32_t) XMAX && end.x > (int32_t) XMAX) return;
+	if ( start.y > (int32_t) YMAX && end.y > (int32_t) YMAX) return;
+
 	if (!clipline(&start.x, &start.y, &end.x, &end.y)) {
 		return;
 	}
+	lines_count_global += 1;
 
-	int dx =  abs((int)end.x - (int)start.x);
-	int sx = (int)start.x < (int)end.x ? 1 : -1;
+	int32_t dx =  abs((int32_t)end.x - (int32_t)start.x);
+	int32_t sx = (int32_t)start.x < (int32_t)end.x ? 1 : -1;
 
-	int dy = -abs((int)end.y - (int)start.y);
-	int sy = (int)start.y < (int)end.y ? 1 : -1;
+	int32_t dy = -abs((int32_t)end.y - (int32_t)start.y);
+	int32_t sy = (int32_t)start.y < (int32_t)end.y ? 1 : -1;
 
-	int err = dx + dy;
+	int32_t err = dx + dy;
 	while (1) {
 		pixel_set(start.x, start.y, buffer, color);
 		if (start.x == end.x && start.y == end.y) break;
-		int e2 = 2 * err;
+		int32_t e2 = 2 * err;
 		if (e2 > dy) { err += dy; start.x += sx; }
 		if (e2 < dx) { err += dx; start.y += sy; }
 	}
 }
+
+
 
 void grid_draw(uint32_t* buffer, Camera camera) {
 
@@ -303,43 +239,79 @@ void buffer_flush(uint32_t* buffer, uint8_t bytes_per_pixel) {
 	memset(buffer, 0, PIXELS_NUMBER * bytes_per_pixel);
 }
 
-void triangle_draw(Triangle triangle, uint32_t* buffer, Camera camera, Color color) {
+bool is_point_in_triangle(V2u p, Triangle t) {
 
-	line_draw(triangle.v1, triangle.v2, buffer, color, camera);
-	line_draw(triangle.v1, triangle.v3, buffer, color, camera);
-	line_draw(triangle.v2, triangle.v3, buffer, color, camera);
+	V3f v1 = t.v1;
+	V3f v2 = t.v2;
+	V3f v3 = t.v3;
+
+	V2s a = { .x = (int32_t)v1.x, .y = (int32_t)v1.y };
+	V2s b = { .x = (int32_t)v2.x, .y = (int32_t)v2.y };
+	V2s c = { .x = (int32_t)v3.x, .y = (int32_t)v3.y };
+	V2s s = { .x = (int32_t) p.x, .y = (int32_t) p.y };
+
+	int32_t as_x = s.x - a.x;
+	int32_t as_y = s.y - a.y;
+
+	bool s_ab = (b.x - a.x) * as_y - (b.y - a.y) * as_x > 0;
+
+	if (( (c.x - a.x) * as_y - (c.y - a.y) * as_x > 0 ) == s_ab) return false;
+	if (( (c.x - b.x) * (s.y - b.y) - (c.y - b.y) * (s.x - b.x)  > 0 ) != s_ab) return false;
+	return true;
 }
 
-typedef struct {
-	V3f origin;
-	float width;
-	float height;
-	Color color;
-} Rectangle;
+void triangle_draw(Triangle t, uint32_t* buffer, Camera camera, Color color) {
 
-void cube_draw(V3f origin, float length, uint32_t* buffer, Color color, Camera camera) {
+	if (state.wireframe) {
+		line_draw(t.v1, t.v2, buffer, color, camera);
+		line_draw(t.v1, t.v3, buffer, color, camera);
+		line_draw(t.v2, t.v3, buffer, color, camera);
+	} else {
+		/*
+		V2s v1 = get_image_crd(t.v1, camera);
+		V2s v2 = get_image_crd(t.v2, camera);
+		V2s v3 = get_image_crd(t.v3, camera);
 
-	// base
-	V3f p2 = {{ origin.x+length, origin.y, origin.z}};
-	V3f p3 = {{ origin.x, origin.y, origin.z+length}};
-	V3f p4 = {{ origin.x+length, origin.y, origin.z+length}};
+		uint32_t x_min = v1.x;
+		if (v2.x < x_min) x_min = v2.x;
+		if (v3.x < x_min) x_min = v3.x;
+		uint32_t x_max = t.v1.x;
+		if (v2.x > x_max) x_max = v2.x;
+		if (v3.x > x_max) x_max = v3.x;
+		uint32_t y_min = t.v1.y;
+		if (v2.y < y_min) y_min = v2.y;
+		if (v3.y < y_min) y_min = v3.y;
+		uint32_t y_max = t.v1.y;
+		if (v2.y > y_max) y_max = v2.y;
+		if (v3.y > y_max) y_max = v3.y;
 
-	V3f p5 = {{ origin.x, origin.y+length, origin.z }};
-	V3f p6 = {{ origin.x+length, origin.y+length, origin.z}};
-	V3f p7 = {{ origin.x, origin.y+length, origin.z+length}};
-	V3f p8 = {{ origin.x+length, origin.y+length, origin.z+length}};
-
-	Triangle tri1 = { .v1 = origin, .v2 = p2, .v3 = p4 };
-	Triangle tri2 = { .v1 = origin, .v2 = p3, .v3 = p4 };
-	Triangle tri3 = { .v1 = p5, .v2 = p6, .v3 = p8 };
-	Triangle tri4 = { .v1 = p5, .v2 = p7, .v3 = p8 };
-
-	triangle_draw(tri1, buffer, camera, RED);
-	triangle_draw(tri2, buffer, camera, RED);
-	triangle_draw(tri3, buffer, camera, RED);
-	triangle_draw(tri4, buffer, camera, RED);
+		for(uint32_t x = x_min; x <= x_max; x++) {
+		for(uint32_t y = y_min; y <= y_max; y++) {
+			V2u p = (V2u) { x, y };
+			if (is_point_in_triangle(p, t)) {
+				pixel_set(x, y, buffer, color);
+			}
+		}}
+	*/
+	}
 }
 
+void time_measure_start(struct timespec* t0) {
+
+	*t0 = (struct timespec){0};
+	timespec_get(t0, TIME_UTC);
+}
+
+double time_measure_end_ms(struct timespec* t1, struct timespec* t0) {
+
+	*t1 = (struct timespec){0};
+	timespec_get(t1, TIME_UTC);
+
+	long dns = t1->tv_nsec - t0->tv_nsec;
+	double frame_time_ms = (double) dns / (1000 * 1000);
+
+	return frame_time_ms;
+}
 
 void event_loop(SDLContext* ctx, uint32_t* buffer, Camera camera) {
 
@@ -358,13 +330,7 @@ void event_loop(SDLContext* ctx, uint32_t* buffer, Camera camera) {
 
 	while (running) {
 
-		// start time measuring
-		if (step % 1000 == 0) {
-			t0 = (struct timespec){0};
-			t1 = (struct timespec){0};
-			timespec_get(&t0, TIME_UTC);
-		}
-
+		time_measure_start(&t0);
 		while (SDL_PollEvent(&ctx->event) != 0) {
 
 			switch (ctx->event.type) {
@@ -373,6 +339,7 @@ void event_loop(SDLContext* ctx, uint32_t* buffer, Camera camera) {
 				float mv_fac = 0.05f;
 				if (ctx->event.key.keysym.sym == SDLK_ESCAPE) running = false;
 				if (ctx->event.key.keysym.sym == SDLK_g) state.grid_on = !state.grid_on;
+				if (ctx->event.key.keysym.sym == SDLK_w) state.wireframe = !state.wireframe;
 				if (ctx->event.key.keysym.sym == SDLK_u) {
 					V3f dir = (V3f) {{camera.forward.x, 0.0f, camera.forward.z}};
 					dir = norm_3f(dir);
@@ -399,32 +366,50 @@ void event_loop(SDLContext* ctx, uint32_t* buffer, Camera camera) {
 					.x = ctx->event.motion.xrel,
 					.y = ctx->event.motion.yrel,
 				};
-				camera_update(&camera, rel);
+				camera_update_mouse(&camera, rel);
 
 			default:
 				break;
 			}
 		}
 		if (state.grid_on) grid_draw(buffer, camera);
-		triangle_draw(tri1, buffer, camera, GREEN);
-		V3f origin = {{8.0f, 0.0f, 8.0f}};
-		cube_draw(origin, 2.0f, buffer, RED, camera);
+		/*
+		for (size_t i = 0; i < asset_cube.f_count; i++) {
+			Triangle t = {
+				.v1 = asset_cube.v[asset_cube.f[i].x-1],
+				.v2 = asset_cube.v[asset_cube.f[i].y-1],
+				.v3 = asset_cube.v[asset_cube.f[i].z-1]
+			};
+
+			triangle_draw(t, buffer, camera, GREEN);
+		}
+		*/
+
+		for (size_t i = 0; i < asset_teapot.f_count; i++) {
+			Triangle t = {
+				.v1 = asset_teapot.v[asset_teapot.f[i].x-1],
+				.v2 = asset_teapot.v[asset_teapot.f[i].y-1],
+				.v3 = asset_teapot.v[asset_teapot.f[i].z-1]
+			};
+
+			triangle_draw(t, buffer, camera, GREEN);
+		}
+
+		//triangle_draw(tri1, buffer, camera, GREEN);
+		//V3f origin = {{8.0f, 0.0f, 8.0f}};
+		//cube_draw(origin, 2.0f, buffer, RED, camera);
 
 		SDL_UpdateWindowSurface(ctx->window);
 		buffer_flush(buffer, ctx->bytes_per_pixel);
 
 		// end time measuring
-    		timespec_get(&t1, TIME_UTC);
-    		long dns = t1.tv_nsec - t0.tv_nsec;
-		double frame_time_ms = dns / (1000.0*1000.0);
-		double frame_time_s  = frame_time_ms / 1000.0;
-		if (step % 1000 == 0) {
-    			printf("frame time = %.2f ms\n", frame_time_ms);
-    			printf("       FPS = %.2f\n", 1/frame_time_s);
-			camera_info(camera);
-			step = 0;
-		}
-		step += 1;
+		double t_ms = time_measure_end_ms(&t1, &t0);
+		text_render(string_format("frame time = %.2f ms, FPS = %.2f,"
+					"lines drawn = %zu, triangles drawn = %zu\n",
+					t_ms, 1/(t_ms/1000), lines_count_global,
+					triangle_count_global), 0, 0, buffer, GREEN, 2);
+		lines_count_global     = 0;
+		triangle_count_global = 0;
 	}
 }
 
@@ -436,7 +421,8 @@ int main(void) {
 
 	uint32_t* buffer = ctx->surface->pixels;
 
-	Camera camera = camera_default();
+	Camera camera;
+	camera_default_set(&camera);
 
 	event_loop(ctx, buffer, camera);
 
